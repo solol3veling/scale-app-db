@@ -21,6 +21,8 @@ RUN chmod +x /scripts/*.sh
 # Set up cron
 COPY scripts/crontab /etc/crontabs/root
 
-# Use PostgreSQL init system to start cron
-COPY scripts/init-cron.sh /docker-entrypoint-initdb.d/
-RUN chmod +x /docker-entrypoint-initdb.d/init-cron.sh
+# Wrapper script to start cron alongside PostgreSQL
+COPY scripts/start-services.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/start-services.sh
+
+CMD ["start-services.sh"]
