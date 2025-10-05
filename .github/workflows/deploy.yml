@@ -54,38 +54,43 @@ jobs:
             # Create network if it doesn't exist
             docker network create traefik_network 2>/dev/null || true
 
-            # Check if container is running
-            if docker ps -a | grep scale-app-db; then
-              echo "PostgreSQL container exists, performing update..."
+            # Check if this is an update or first deployment
+            if docker ps | grep -q scale-app-db; then
+              echo "⚠️  Production database detected - performing safe update..."
 
-              # Create backup before update
-              docker exec scale-app-db /scripts/backup.sh 2>/dev/null || echo "No backup created (container may be new)"
+              # ONLY update scripts and configs (no container restart)
+              echo "Updating backup/restore scripts..."
+              docker cp scripts/backup.sh scale-app-db:/scripts/backup.sh
+              docker cp scripts/restore.sh scale-app-db:/scripts/restore.sh
+              docker cp scripts/crontab scale-app-db:/etc/crontabs/root
 
-              # Stop and remove old container
-              docker stop scale-app-db 2>/dev/null || true
-              docker rm scale-app-db 2>/dev/null || true
+              # Reload cron without restarting container
+              docker exec scale-app-db sh -c "pkill crond && crond -f -l 2 &" 2>/dev/null || true
+
+              echo "✅ Scripts updated without restarting database"
+              echo "ℹ️  Database container NOT restarted (zero downtime)"
+              echo "ℹ️  To apply Dockerfile/compose changes, manually run: docker compose up -d --build"
+
             else
-              echo "First time deployment..."
-            fi
+              echo "First time deployment - starting PostgreSQL..."
 
-            # Build new image
-            docker compose build
+              # Build and start PostgreSQL
+              docker compose build
+              docker compose up -d postgres
 
-            # Start PostgreSQL (volumes are retained)
-            docker compose up -d postgres
+              # Wait for PostgreSQL to be ready
+              echo "Waiting for PostgreSQL to start..."
+              sleep 10
 
-            # Wait for PostgreSQL to be ready
-            echo "Waiting for PostgreSQL to start..."
-            sleep 10
-
-            # Verify PostgreSQL is running
-            if docker ps | grep scale-app-db; then
-              echo "✅ PostgreSQL is up and running"
-              docker compose exec -T postgres pg_isready -U ${{ secrets.POSTGRES_USER }} || exit 1
-            else
-              echo "❌ PostgreSQL failed to start"
-              docker compose logs postgres
-              exit 1
+              # Verify PostgreSQL is running
+              if docker ps | grep scale-app-db; then
+                echo "✅ PostgreSQL is up and running"
+                docker compose exec -T postgres pg_isready -U ${{ secrets.POSTGRES_USER }} || exit 1
+              else
+                echo "❌ PostgreSQL failed to start"
+                docker compose logs postgres
+                exit 1
+              fi
             fi
 
       - name: Verify deployment
