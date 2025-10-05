@@ -10,15 +10,15 @@ POSTGRES_PID=$!
 
 # Wait for PostgreSQL to be ready
 echo "Waiting for PostgreSQL to start..."
-until pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" > /dev/null 2>&1; do
+until pg_isready -U postgres > /dev/null 2>&1; do
     sleep 2
 done
 
 echo "PostgreSQL is ready!"
 
-# Start cron daemon for scheduled backups
+# Start cron daemon for scheduled backups (no -f flag, runs as daemon)
 echo "Starting cron daemon for automated backups..."
-crond -f -l 2 &
+crond -l 2
 
-# Wait for PostgreSQL process
+# Wait for PostgreSQL process (keeps container alive)
 wait $POSTGRES_PID
