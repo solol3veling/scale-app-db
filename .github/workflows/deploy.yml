@@ -1,4 +1,4 @@
-name: Deploy PostgreSQL to VPS
+name: Deploy PostgreSQL
 
 on:
   push:
@@ -6,102 +6,101 @@ on:
       - main
   workflow_dispatch:
 
-env:
-  DOCKER_IMAGE: scale-app-db
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Create .env file from secrets
+        run: |
+          cat > .env << EOF
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_PORT=5432
+          S3_BUCKET=${{ secrets.S3_BUCKET }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }}
+          TZ=UTC
+          PGADMIN_DEFAULT_EMAIL=admin@scaleapp.com
+          PGADMIN_DEFAULT_PASSWORD=admin123
+          PGADMIN_PORT=5050
+          EOF
+
+      - name: Copy PostgreSQL config to server
+        uses: appleboy/scp-action@v0.1.4
         with:
-          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: ".,!.git,!.github"
+          target: "/home/${{ secrets.SERVER_USER }}/scale-app-db"
+          strip_components: 0
+          overwrite: true
 
-      - name: Add VPS to known hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+      - name: Deploy PostgreSQL to server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/${{ secrets.SERVER_USER }}/scale-app-db
 
-      - name: Deploy to VPS
-        env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
-        run: |
-          # Create deployment directory if it doesn't exist
-          ssh ${VPS_USER}@${VPS_HOST} "mkdir -p ${DEPLOY_PATH}"
+            # Create network if it doesn't exist
+            docker network create app-network 2>/dev/null || true
 
-          # Sync files to VPS (excluding .git and sensitive files)
-          rsync -avz --delete \
-            --exclude='.git' \
-            --exclude='.env' \
-            --exclude='backups/*' \
-            --exclude='.github' \
-            ./ ${VPS_USER}@${VPS_HOST}:${DEPLOY_PATH}/
+            # Check if container is running
+            if docker ps -a | grep scale-app-db; then
+              echo "PostgreSQL container exists, performing update..."
 
-      - name: Deploy containers on VPS
-        env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
-        run: |
-          ssh ${VPS_USER}@${VPS_HOST} << 'ENDSSH'
-            cd ${DEPLOY_PATH}
+              # Create backup before update
+              docker exec scale-app-db /scripts/backup.sh 2>/dev/null || echo "No backup created (container may be new)"
 
-            # Pull latest changes
-            echo "Building Docker image..."
+              # Stop and remove old container
+              docker stop scale-app-db 2>/dev/null || true
+              docker rm scale-app-db 2>/dev/null || true
+            else
+              echo "First time deployment..."
+            fi
+
+            # Build new image
             docker compose build
 
-            # Check if database is already running
-            if docker compose ps | grep -q "scale-app-db.*Up"; then
-              echo "Database is running. Performing rolling update..."
+            # Start PostgreSQL (volumes are retained)
+            docker compose up -d postgres
 
-              # Create a pre-deployment backup
-              docker compose exec -T postgres /scripts/backup.sh || echo "Warning: Backup failed"
-
-              # Restart with new image
-              docker compose up -d --no-deps postgres
-            else
-              echo "Starting database for the first time..."
-              docker compose up -d
-            fi
-
-            # Wait for database to be ready
-            echo "Waiting for database to be ready..."
+            # Wait for PostgreSQL to be ready
+            echo "Waiting for PostgreSQL to start..."
             sleep 10
 
-            # Show status
-            docker compose ps
-          ENDSSH
-
-      - name: Health check
-        env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
-        run: |
-          ssh ${VPS_USER}@${VPS_HOST} << 'ENDSSH'
-            cd ${DEPLOY_PATH}
-
-            # Check container health
-            if docker compose exec -T postgres pg_isready -U postgres; then
-              echo "✅ Database is healthy"
+            # Verify PostgreSQL is running
+            if docker ps | grep scale-app-db; then
+              echo "✅ PostgreSQL is up and running"
+              docker compose exec -T postgres pg_isready -U ${{ secrets.POSTGRES_USER }} || exit 1
             else
-              echo "❌ Database health check failed"
+              echo "❌ PostgreSQL failed to start"
+              docker compose logs postgres
               exit 1
             fi
-          ENDSSH
 
-      - name: Notify deployment status
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ Deployment successful"
-          else
-            echo "❌ Deployment failed"
-          fi
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/${{ secrets.SERVER_USER }}/scale-app-db
+            echo "Container status:"
+            docker compose ps
+            echo ""
+            echo "Database health check:"
+            docker compose exec -T postgres pg_isready -U ${{ secrets.POSTGRES_USER }}
+            echo ""
+            echo "AWS credentials check:"
+            docker compose exec -T postgres aws sts get-caller-identity
