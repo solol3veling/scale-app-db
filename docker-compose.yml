@@ -47,7 +47,7 @@ services:
     depends_on:
       - postgres
     profiles:
-      - admin
+      - deploy
 
 volumes:
   db_data:
