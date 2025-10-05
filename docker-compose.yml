@@ -22,7 +22,7 @@ services:
       - db_data:/var/lib/postgresql/data
       - ./scripts:/scripts
     networks:
-      - app-network
+      - traefik_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -43,7 +43,7 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     networks:
-      - app-network
+      - traefik_network
     depends_on:
       - postgres
     profiles:
@@ -56,5 +56,5 @@ volumes:
     driver: local
 
 networks:
-  app-network:
-    driver: bridge
+  traefik_network:
+    external: true

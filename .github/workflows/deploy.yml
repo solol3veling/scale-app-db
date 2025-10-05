@@ -52,7 +52,7 @@ jobs:
             cd /home/${{ secrets.SERVER_USER }}/scale-app-db
 
             # Create network if it doesn't exist
-            docker network create app-network 2>/dev/null || true
+            docker network create traefik_network 2>/dev/null || true
 
             # Check if container is running
             if docker ps -a | grep scale-app-db; then
