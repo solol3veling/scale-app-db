@@ -1,24 +1,10 @@
 #!/bin/bash
 set -e
 
-# Custom entrypoint script for PostgreSQL container
-# Starts PostgreSQL and cron daemon for automated backups
-
-# Start the original PostgreSQL entrypoint in the background
-docker-entrypoint.sh postgres &
-POSTGRES_PID=$!
-
-# Wait for PostgreSQL to be ready
-echo "Waiting for PostgreSQL to start..."
-until pg_isready -U postgres > /dev/null 2>&1; do
-    sleep 2
-done
-
-echo "PostgreSQL is ready!"
-
-# Start cron daemon for scheduled backups (no -f flag, runs as daemon)
-echo "Starting cron daemon for automated backups..."
+# Start cron daemon for automated backups
+echo "Starting cron daemon..."
 crond -l 2
 
-# Wait for PostgreSQL process (keeps container alive)
-wait $POSTGRES_PID
+# Execute the original PostgreSQL entrypoint (replaces this process)
+echo "Starting PostgreSQL..."
+exec docker-entrypoint.sh postgres
