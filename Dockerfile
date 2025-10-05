@@ -21,9 +21,6 @@ RUN chmod +x /scripts/*.sh
 # Set up cron
 COPY scripts/crontab /etc/crontabs/root
 
-# Custom entrypoint to start cron and PostgreSQL
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["postgres"]
+# Use PostgreSQL init system to start cron
+COPY scripts/init-cron.sh /docker-entrypoint-initdb.d/
+RUN chmod +x /docker-entrypoint-initdb.d/init-cron.sh
