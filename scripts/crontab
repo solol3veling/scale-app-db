@@ -1,0 +1,5 @@
+# PostgreSQL backup cron schedule
+# Runs weekly on Sunday at 02:00 UTC
+
+# Weekly backup every Sunday at 02:00
+0 2 * * 0 /scripts/backup.sh 2>&1 | tee -a /var/log/postgres-backup.log

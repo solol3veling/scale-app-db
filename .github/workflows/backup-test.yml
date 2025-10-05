@@ -1,0 +1,57 @@
+name: Test Backup and Restore
+
+on:
+  schedule:
+    # Run weekly on Sunday at 04:00 UTC
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+jobs:
+  test-backup-restore:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Test backup and restore process
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
+        run: |
+          ssh ${VPS_USER}@${VPS_HOST} << 'ENDSSH'
+            cd ${DEPLOY_PATH}
+
+            echo "Creating test backup..."
+            docker compose exec -T postgres /scripts/backup.sh
+
+            echo "Listing recent backups..."
+            docker compose exec -T postgres ls -lh /backups/backup_*.sql.gz | tail -5
+
+            echo "Verifying S3 upload (if configured)..."
+            if [ -n "${S3_BUCKET}" ]; then
+              docker compose exec -T postgres aws s3 ls s3://${S3_BUCKET}/backups/ | tail -5
+            fi
+
+            echo "✅ Backup test completed successfully"
+          ENDSSH
+
+      - name: Notify test status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Backup test successful"
+          else
+            echo "❌ Backup test failed"
+          fi

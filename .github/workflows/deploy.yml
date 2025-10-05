@@ -1,0 +1,107 @@
+name: Deploy PostgreSQL to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: scale-app-db
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
+        run: |
+          # Create deployment directory if it doesn't exist
+          ssh ${VPS_USER}@${VPS_HOST} "mkdir -p ${DEPLOY_PATH}"
+
+          # Sync files to VPS (excluding .git and sensitive files)
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.env' \
+            --exclude='backups/*' \
+            --exclude='.github' \
+            ./ ${VPS_USER}@${VPS_HOST}:${DEPLOY_PATH}/
+
+      - name: Deploy containers on VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
+        run: |
+          ssh ${VPS_USER}@${VPS_HOST} << 'ENDSSH'
+            cd ${DEPLOY_PATH}
+
+            # Pull latest changes
+            echo "Building Docker image..."
+            docker compose build
+
+            # Check if database is already running
+            if docker compose ps | grep -q "scale-app-db.*Up"; then
+              echo "Database is running. Performing rolling update..."
+
+              # Create a pre-deployment backup
+              docker compose exec -T postgres /scripts/backup.sh || echo "Warning: Backup failed"
+
+              # Restart with new image
+              docker compose up -d --no-deps postgres
+            else
+              echo "Starting database for the first time..."
+              docker compose up -d
+            fi
+
+            # Wait for database to be ready
+            echo "Waiting for database to be ready..."
+            sleep 10
+
+            # Show status
+            docker compose ps
+          ENDSSH
+
+      - name: Health check
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/scale-app-db' }}
+        run: |
+          ssh ${VPS_USER}@${VPS_HOST} << 'ENDSSH'
+            cd ${DEPLOY_PATH}
+
+            # Check container health
+            if docker compose exec -T postgres pg_isready -U postgres; then
+              echo "✅ Database is healthy"
+            else
+              echo "❌ Database health check failed"
+              exit 1
+            fi
+          ENDSSH
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful"
+          else
+            echo "❌ Deployment failed"
+          fi
